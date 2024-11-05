@@ -163,6 +163,19 @@
 (defmethod lisp-logic->smt ((cons cons))
   (lisp-logic-cons->smt (car cons) (cdr cons)))
 
+(defmethod lisp-logic-cons->smt ((car (eql '|xor|)) rest)
+  "expression is already parsed"
+  (cons car rest))
+(defmethod lisp-logic-cons->smt ((car (eql '|and|)) rest)
+  "expression is already parsed"
+  (cons car rest))
+(defmethod lisp-logic-cons->smt ((car (eql '|or|)) rest)
+  "expression is already parsed"
+  (cons car rest))
+(defmethod lisp-logic-cons->smt ((car (eql '|not|)) rest)
+  "expression is already parsed"
+  (cons car rest))
+
 (defmethod lisp-logic-cons->smt ((car (eql 'xor)) rest)
   `(|xor| ,@(mapcar #'lisp-logic->smt rest)))
 
@@ -196,8 +209,7 @@
                       'list)))))
 
 (defmethod lisp-logic-cons->smt ((car (eql '*)) rest)
-  (reduce #'lisp-logic-multiply->smt
-          (mapcar #'lisp-logic->smt rest)))
+  (reduce #'lisp-logic-multiply->smt (mapcar #'lisp-logic->smt rest)))
 
 (defmethod lisp-logic-cons->smt ((car (eql '+)) rest)
   (when (zerop (length rest))
@@ -220,7 +232,9 @@
     (loop for i from 0 below m do
       (loop for j from 0 below n do
         (setf (aref result i j)
-              `(|xor| ,@(loop for s from 0 below k collect `(|and| ,(aref a i s) ,(aref b s j)))))))
+              `(|xor| ,@(loop for s from 0 below k collect
+                              `(|and| ,(lisp-logic->smt (aref a i s))
+                                      ,(lisp-logic->smt (aref b s j))))))))
     result))
 
 (defmethod lisp-logic-multiply->smt (a b)
