@@ -45,7 +45,7 @@
 
 (defun check-sat (&key (solver *solver*))
   "Returns non-NIL if and only if the problem is satisfied."
-  (eq :sat (solve solver)))
+  (eq :sat (solve :solver solver)))
 
 (defun reset-solver (&key (solver *solver*)) (%reset-solver solver))
 (defgeneric %reset-solver (solver)
@@ -54,6 +54,8 @@
 (defun retrieve-model (&key (solver *solver*)) (%retrieve-model solver))
 (defgeneric %retrieve-model (solver)
   (:documentation "Returns the model from `solver' - provided that it exists. Usually a bit-vector."))
+
+(defun model (&key (solver *solver*)) (%model solver))
 
 (defun model-eval (expression &key (solver *solver*)) (%model-eval solver expression))
 (defgeneric %model-eval (solver expression)
@@ -69,13 +71,13 @@
 
 (defun allocate-vector (n &key (solver *solver*)) (%allocate-vector solver n))
 (defmethod %allocate-vector (solver (n integer))
-  (coerce (loop repeat n collect (allocate-boolean solver)) 'vector))
+  (coerce (loop repeat n collect (allocate-boolean :solver solver)) 'vector))
 
 (defun allocate-matrix (m n &key (solver *solver*)) (%allocate-matrix solver m n))
 (defmethod %allocate-matrix (solver (m integer) (n integer))
   (make-array (list m n) :initial-contents
               (loop repeat m collect
-                             (loop repeat n collect (allocate-boolean solver)))))
+                             (loop repeat n collect (allocate-boolean :solver solver)))))
 ;;; General implementation
 
 (defmethod %model-eval (solver (expression list))
@@ -90,13 +92,15 @@
   (:documentation "An implementation of lisp-logic that uses Z3."))
 
 
-(defstruct z3-symbol (name "" :type string)) ; to avoid interning
+(defstruct z3-symbol (name "" :type string) (index 0 :type integer)) ; to avoid interning
 
 (defmethod print-object ((symbol z3-symbol) stream)
   (princ (z3-symbol-name symbol) stream))
 
 ;; TODO fix this
-(defun z3-name (index) (make-z3-symbol :name (format nil "var-~a" index)))
+(defun z3-name (index) (make-z3-symbol :name (format nil "var-~a" index) :index index))
+
+(defun z3-symbol-equal-p (z1 z2) (string= (z3-symbol-name z1) (z3-symbol-name z2)))
 
 ;;; TODO SAT implementation
 ;;; Use Z3 to translate clauses on demand - no global optimisation
@@ -104,7 +108,7 @@
 ;;; keep it simple for now
 
 (defclass sat-solver (solver sat-lisp:incremental-sat-solver)
-  ((phrase-count :initarg :phrase-count :accessor phrase-count :initform 0))
+  ()
   (:documentation "An implementation of lisp-logic that uses an incremental sat solver via sat-lisp."))
 
 (defvar *solver* (make-instance 'sat-solver))
@@ -130,9 +134,10 @@
 
 (defmethod %reset-solver ((solver sat-solver))
   (sat-lisp:release-solver solver)
+  (setf ())
   (sat-lisp:init-solver solver))
 
-(defmethod %retrieve-model ((solver sat-solver)) (sat-lisp:model solver))
+(defmethod %model ((solver sat-solver)) (sat-lisp:model solver))
 
 (defmethod %allocate-boolean ((solver sat-solver))
   (incf (sat-lisp:variable-count solver)))
@@ -140,7 +145,9 @@
 (defmethod %input-formula ((solver sat-solver) formula)
   "Should use Z3 to do the formula translation as a first step."
   (bind ((smt-formulae (lisp-logic->smt formula))
-         (symbols (collect-symbols smt-formulae))
+         (symbols (remove-duplicates
+                   (remove-if-not (lambda (s) (z3-symbol-p s)) (alexandria:flatten smt-formulae))
+                   :test #'z3-symbol-equal-p))
          (cl-smt-lib:*smt-debug* *debug-io*))
     ;; reset the solver
     (cl-smt-lib:write-to-smt *smt* '((|reset|)))
@@ -148,7 +155,7 @@
     (loop for symbol in symbols
           do (cl-smt-lib:write-to-smt *smt* `((|declare-fun| ,symbol () |Bool|))))
     ;; write the formulae
-    (cl-smt-lib:write-to-smt *smt*)
+    (cl-smt-lib:write-to-smt *smt* `((|assert| ,smt-formulae)))
     ;; read out the results
     ;; convert the results to cnf form and write them to the solver
     (smt->cnf solver)))
@@ -205,7 +212,7 @@
                        (apply #'aops:each
                               (lambda (&rest elements)
                                 `(|=| ,@(mapcar #'lisp-logic->smt elements)))
-                              rest))
+                              (mapcar #'lisp-logic->smt rest)))
                       'list)))))
 
 (defmethod lisp-logic-cons->smt ((car (eql '*)) rest)
@@ -218,7 +225,9 @@
     ((or integer cons) `(|xor| ,@(mapcar #'lisp-logic->smt rest)))
     (array (apply #'aops:each (lambda (&rest elements)
                                 (lisp-logic->smt `(+ ,@elements)))
-                  rest))))
+                  (mapcar #'lisp-logic->smt rest)))))
+
+(trace lisp-logic->smt lisp-logic-cons->smt lisp-logic-multiply->smt)
 
 (defmethod lisp-logic-multiply->smt ((a array) (b vector))
   "Assumes that b is a column vector."
@@ -272,49 +281,64 @@
 (defun smt->cnf (solver)
   "Serialises the current state of the SMT solver for use with a SAT solver."
   (cl-smt-lib:write-to-smt *smt* `((|apply|
-                                    (|then| ; TODO look into these? are they all necessary?
-                                     |simplify| ; is this the best combination?
-                                     |solve-eqs|
-                                     |card2bv|
-                                     |pb2bv|
-                                     |solve-eqs|
-                                     |simplify|
-                                     |tseitin-cnf|)))) ; use tactics to convert to CNF
-  (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
+                                    |tseitin-cnf|))) ; use tactics to convert to CNF
+  (bind (((_ (_ &rest content)) (print (cl-smt-lib:read-from-smt *smt*)))
          (depth (nth (- (length content) 1) content))
          (precision (nth (- (length content) 3) content))
+         (sat-lisp:*sat-solver* solver)
          (clauses (subseq content 0 (- (length content) 4))) ; 20 for testing purposes
-         (variable-hash-table (make-hash-table :test 'eq))
-         (number-of-variables 0))
+         (variable-hash-table (make-hash-table :test 'eq)))
     (loop for clause in clauses do
       (let ((symbol-bag (remove 'not (remove 'or (alexandria:flatten clause)))))
         (loop for symbol in symbol-bag do
           (unless (gethash symbol variable-hash-table)
                                         ; symbol not stored yet
-            (incf number-of-variables)
             (setf (gethash symbol variable-hash-table)
-                  number-of-variables))))) ;; TODO fix this, it will mess up the number of variables.
+                  (if (str:starts-with? "VAR-" (symbol-name symbol))
+                      (parse-integer (subseq (symbol-name symbol) 4))
+                      (allocate-boolean :solver solver)))))))
     (print clauses) ;; TODO Actually write the variables to the sat solver
-    ;; (loop for clause in clauses do
-    ;;   (cond
-    ;;     ((symbolp clause)
-    ;;      (sat-lisp:add-literal (gethash clause variable-hash-table))
-    ;;      (sat-lisp:add-literal 0)
-    ;;                                     ;(format stream "~a 0~%" (gethash clause variable-hash-table))
-    ;;      )                              ; a unit assertion
-    ;;     ((eq (car clause) 'not)
-    ;;      (sat-lisp:add-literal (- (gethash (second clause) variable-hash-table)))
-    ;;      (sat-lisp:add-literal 0))
-    ;;                                     ; a unit negation
-    ;;     ((eq (car clause) 'or)
-    ;;      (map nil #'sat-lisp:add-literal
-    ;;           (loop for subclause in (rest clause)
-    ;;                 collect
-    ;;                 (cond ((symbolp subclause)
-    ;;                        (gethash subclause variable-hash-table))
-    ;;                       ((eq 'not (car subclause))
-    ;;                        (- (gethash (second subclause) variable-hash-table)))
-    ;;                       (t (error "shouldnt be here")))))
-    ;;      (sat-lisp:add-literal 0))
-    ;;     (t (error "not understood"))))
-    pathname))
+    (print (alexandria:hash-table-alist variable-hash-table))
+    (loop for clause in clauses do
+      (cond
+        ((symbolp clause)
+         (sat-lisp:add-literal (gethash clause variable-hash-table))
+         (sat-lisp:add-literal 0)
+                                        ;(format stream "~a 0~%" (gethash clause variable-hash-table))
+         )                              ; a unit assertion
+        ((eq (car clause) 'not)
+         (sat-lisp:add-literal (- (gethash (second clause) variable-hash-table)))
+         (sat-lisp:add-literal 0))
+                                        ; a unit negation
+        ((eq (car clause) 'or)
+         (map nil #'sat-lisp:add-literal
+              (loop for subclause in (rest clause)
+                    collect
+                    (cond ((symbolp subclause)
+                           (gethash subclause variable-hash-table))
+                          ((eq 'not (car subclause))
+                           (- (gethash (second subclause) variable-hash-table)))
+                          (t (error "shouldnt be here")))))
+         (sat-lisp:add-literal 0))
+        (t (error "not understood"))))
+   ; pathname
+    ))
+
+(defun close-smt (smt)
+  ;; Close the input and output streams first
+  (close (cl-smt-lib::input smt))
+  (close (cl-smt-lib::output smt))
+                                        ; (bt:destroy-thread (cl-smt-lib/process-two-way-stream::thread smt))
+  (uiop:terminate-process (cl-smt-lib::process smt))
+  ;; Make sure it's dead
+ ; (uiop:run-program (format nil "kill ~a" (smt-pid smt)) :ignore-error-status t)
+  ;;  If the process is still alive, user needs to be alerted
+  (sleep 1)
+  (when (uiop:process-alive-p (cl-smt-lib::process smt))
+    (error "SMT process still alive somehow")))
+(defun reset-smt-process ()
+  "Resets the SMT process. This should not normally be called, unless, say, the Z3 process has been
+   killed manually."
+                                        ; (ignore-errors (close-smt *smt*))
+  (close-smt *smt*)
+  (setf *smt* (make-smt)))

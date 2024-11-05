@@ -5,6 +5,7 @@
   :license "MIT"
   :depends-on ("sat-lisp"
                "bordeaux-threads"
+               "str"
                "cl-smt-lib"
                "array-operations")
   :components ((:module "src"
