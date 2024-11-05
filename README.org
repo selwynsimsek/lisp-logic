@@ -1,10 +1,13 @@
-* lisp-logic 
+* lisp-logic
 
 A language that resembles SMT-LIB used for high level automated theorem proving.
 
 ** Usage
 
 ** Installation
+#+BEGIN_SRC lisp
+  (ql:quickload :lisp-logic)
+#+END_SRC
 
 ** Author
 

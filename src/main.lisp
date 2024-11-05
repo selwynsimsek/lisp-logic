@@ -3,7 +3,24 @@
 
 (defpackage lisp-logic
   (:use :cl)
-  (:export *solver*))
+  (:shadowing-import-from #:metabang-bind #:bind)
+  (:export *solver*
+           variable-count
+           phrase-count
+           solve
+           transpose
+           solver
+           check-sat
+           reset-solver
+           retrieve-model
+           model-eval
+           input-formula
+           allocate-boolean
+           allocate-vector
+           allocate-matrix
+           z3-solver
+           sat-solver
+           with-sat-solver))
 
 (in-package :lisp-logic)
 
@@ -117,12 +134,135 @@
 
 (defmethod %retrieve-model ((solver sat-solver)) (sat-lisp:model solver))
 
-(defmethod %input-formula ((solver sat-solver) formula)
-  "Should use Z3 to do the formula translation as a first step."
-  (error "implement me"))
-
 (defmethod %allocate-boolean ((solver sat-solver))
   (incf (sat-lisp:variable-count solver)))
 
+(defmethod %input-formula ((solver sat-solver) formula)
+  "Should use Z3 to do the formula translation as a first step."
+  (bind ((smt-formulae (lisp-logic->smt formula))
+         (symbols (collect-symbols smt-formulae))
+         (cl-smt-lib:*smt-debug* *debug-io*))
+    ;; reset the solver
+    (cl-smt-lib:write-to-smt *smt* '((|reset|)))
+    ;; declare the variables
+    (loop for symbol in symbols
+          do (cl-smt-lib:write-to-smt *smt* `((|declare-fun| ,symbol () |Bool|))))
+    ;; write the formulae
+    (cl-smt-lib:write-to-smt *smt*)
+    ;; read out the results
+    ;; convert the results to cnf form and write them to the solver
+    (smt->cnf solver)))
+
+(defmethod lisp-logic->smt ((formula integer)) (z3-name formula))
+
+(defmethod lisp-logic->smt ((cons cons))
+  (lisp-logic-cons->smt (car cons) (cdr cons)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'xor)) rest)
+  `(|xor| ,@(mapcar #'lisp-logic->smt rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'and)) rest)
+  `(|and| ,@(mapcar #'lisp-logic->smt rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'or)) rest)
+  `(|or| ,@(mapcar #'lisp-logic->smt rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'not)) rest)
+  `(|not| ,(lisp-logic->smt rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'transpose)) rest)
+  (lisp-logic->smt (aops:permute '(1 0) rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql '=>)) rest)
+  `(|or| (|not| ,(lisp-logic->smt (first rest)))
+          ,(lisp-logic->smt (second rest))))
+
+(defmethod lisp-logic-cons->smt ((car (eql '=)) rest)
+  (when (zerop (length rest))
+    (error "need at least one thing to be equal"))
+  (etypecase (first rest)
+    ((or integer cons) `(|=| ,@(mapcar #'lisp-logic->smt rest)))
+    (array `(|and| ,@(coerce (aops:flatten (apply #'aops:each (lambda (&rest elements)
+                                                                `(|=| ,@(mapcar #'lisp-logic->smt elements)))
+                                                  rest))
+                             'list)))))
+
+(defmethod lisp-logic-cons->smt ((car (eql '*)) rest))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'at-most)) rest)
+  `((_ |at-most| ,(first rest)) ,@(rest rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'at-least)) rest)
+  `((_ |at-least| ,(first rest)) ,@(rest rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql 'exactly)) rest)
+  `(|and| ,(lisp-logic-cons->smt (cons 'at-most rest))
+          ,(lisp-logic-cons->smt (cons 'at-least rest))))
+
+
 (defmethod %model-eval ((solver sat-solver) (expression integer))
   (if (sat-lisp:literal-value solver expression) 1 0))
+
+(defvar *smt-args* '("-v:10" "model_validate=true" "parallel.enable=true" "parallel.threads.max=100") "Additional arguments for Z3")
+
+(defun make-smt (&optional (type :z3))
+  "Returns a handle to an SMT solver. Z3 is the default as it exposes useful extensions."
+  (let ((smt
+          (ecase type
+            (:z3 (apply #'cl-smt-lib:make-smt "z3" "-in" *smt-args*))
+            ;; removing cvc5 as we use so many Z3 specific extensions now
+            ;; (:cvc5 (smt:make-smt "cvc5" "--lang=smtlib2.6"))
+            )))
+                                        ;(smt:write-to-smt smt *smt-init-sexp*)
+    smt))
+
+(defvar *smt* (make-smt))
+(defun smt->cnf (solver)
+  "Serialises the current state of the SMT solver for use with a SAT solver."
+  (cl-smt-lib:write-to-smt *smt* `((|apply|
+                                    (|then| ; TODO look into these? are they all necessary?
+                                     |simplify| ; is this the best combination?
+                                     |solve-eqs|
+                                     |card2bv|
+                                     |pb2bv|
+                                     |solve-eqs|
+                                     |simplify|
+                                     |tseitin-cnf|)))) ; use tactics to convert to CNF
+  (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
+         (depth (nth (- (length content) 1) content))
+         (precision (nth (- (length content) 3) content))
+         (clauses (subseq content 0 (- (length content) 4))) ; 20 for testing purposes
+         (variable-hash-table (make-hash-table :test 'eq))
+         (number-of-variables 0))
+    (loop for clause in clauses do
+      (let ((symbol-bag (remove 'not (remove 'or (alexandria:flatten clause)))))
+        (loop for symbol in symbol-bag do
+          (unless (gethash symbol variable-hash-table)
+                                        ; symbol not stored yet
+            (incf number-of-variables)
+            (setf (gethash symbol variable-hash-table)
+                  number-of-variables))))) ;; TODO fix this, it will mess up the number of variables.
+    (print clauses) ;; TODO Actually write the variables to the sat solver
+    ;; (loop for clause in clauses do
+    ;;   (cond
+    ;;     ((symbolp clause)
+    ;;      (sat-lisp:add-literal (gethash clause variable-hash-table))
+    ;;      (sat-lisp:add-literal 0)
+    ;;                                     ;(format stream "~a 0~%" (gethash clause variable-hash-table))
+    ;;      )                              ; a unit assertion
+    ;;     ((eq (car clause) 'not)
+    ;;      (sat-lisp:add-literal (- (gethash (second clause) variable-hash-table)))
+    ;;      (sat-lisp:add-literal 0))
+    ;;                                     ; a unit negation
+    ;;     ((eq (car clause) 'or)
+    ;;      (map nil #'sat-lisp:add-literal
+    ;;           (loop for subclause in (rest clause)
+    ;;                 collect
+    ;;                 (cond ((symbolp subclause)
+    ;;                        (gethash subclause variable-hash-table))
+    ;;                       ((eq 'not (car subclause))
+    ;;                        (- (gethash (second subclause) variable-hash-table)))
+    ;;                       (t (error "shouldnt be here")))))
+    ;;      (sat-lisp:add-literal 0))
+    ;;     (t (error "not understood"))))
+    pathname))
