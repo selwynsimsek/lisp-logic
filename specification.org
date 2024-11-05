@@ -42,9 +42,13 @@ Symbolic type: bit
 args must all be bits.
 
 ** (* &rest elements)
-Symbolic type: matrix
+Symbolic type: matrix or bit
 Performs matrix-vector multiplication mod 2 on the elements.
 Array dimensions must be consistent.
+
+** (+ &rest elements)
+Symbolic type: matrix or bit
+Performs addition mod 2.
 
 ** (transpose a)
 Symbolic type: matrix

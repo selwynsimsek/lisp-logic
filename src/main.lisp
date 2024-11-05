@@ -155,6 +155,11 @@
 
 (defmethod lisp-logic->smt ((formula integer)) (z3-name formula))
 
+(defmethod lisp-logic->smt ((formula vector))
+  (lisp-logic->smt (aops:reshape formula '(t 1))))
+
+(defmethod lisp-logic->smt (formula) formula)
+
 (defmethod lisp-logic->smt ((cons cons))
   (lisp-logic-cons->smt (car cons) (cdr cons)))
 
@@ -171,7 +176,7 @@
   `(|not| ,(lisp-logic->smt rest)))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'transpose)) rest)
-  (lisp-logic->smt (aops:permute '(1 0) rest)))
+  (lisp-logic->smt (aops:permute '(1 0) (lisp-logic->smt (first rest)))))
 
 (defmethod lisp-logic-cons->smt ((car (eql '=>)) rest)
   `(|or| (|not| ,(lisp-logic->smt (first rest)))
@@ -182,12 +187,45 @@
     (error "need at least one thing to be equal"))
   (etypecase (first rest)
     ((or integer cons) `(|=| ,@(mapcar #'lisp-logic->smt rest)))
-    (array `(|and| ,@(coerce (aops:flatten (apply #'aops:each (lambda (&rest elements)
-                                                                `(|=| ,@(mapcar #'lisp-logic->smt elements)))
-                                                  rest))
-                             'list)))))
+    (array `(|and| ,@(coerce
+                      (aops:flatten
+                       (apply #'aops:each
+                              (lambda (&rest elements)
+                                `(|=| ,@(mapcar #'lisp-logic->smt elements)))
+                              rest))
+                      'list)))))
 
-(defmethod lisp-logic-cons->smt ((car (eql '*)) rest))
+(defmethod lisp-logic-cons->smt ((car (eql '*)) rest)
+  (reduce #'lisp-logic-multiply->smt
+          (mapcar #'lisp-logic->smt rest)))
+
+(defmethod lisp-logic-cons->smt ((car (eql '+)) rest)
+  (when (zerop (length rest))
+    (error "need at least one thing to be equal"))
+  (etypecase (first rest)
+    ((or integer cons) `(|xor| ,@(mapcar #'lisp-logic->smt rest)))
+    (array (apply #'aops:each (lambda (&rest elements)
+                                (lisp-logic->smt `(+ ,@elements)))
+                  rest))))
+
+(defmethod lisp-logic-multiply->smt ((a array) (b vector))
+  "Assumes that b is a column vector."
+  (lisp-logic-multiply->smt a (aops:reshape b '(t 1))))
+
+(defmethod lisp-logic-multiply->smt ((a array) (b array))
+  (bind (((m k1) (array-dimensions a))
+         ((k n) (array-dimensions b))
+         (result (make-array (list m n))))
+    (assert (= k1 k))                   ; dimensions need to match up
+    (loop for i from 0 below m do
+      (loop for j from 0 below n do
+        (setf (aref result i j)
+              `(|xor| ,@(loop for s from 0 below k collect `(|and| ,(aref a i s) ,(aref b s j)))))))
+    result))
+
+(defmethod lisp-logic-multiply->smt (a b)
+  ;assumes a and b are bits
+  `(|and| ,(lisp-logic->smt a) ,(lisp-logic->smt b)))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'at-most)) rest)
   `((_ |at-most| ,(first rest)) ,@(rest rest)))
