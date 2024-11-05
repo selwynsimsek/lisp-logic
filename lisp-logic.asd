@@ -3,8 +3,9 @@
   :author "Selwyn Simsek"
   :mailto "selwyn.simsek@cantab.net"
   :license "MIT"
-  :depends-on ("cl-smt-lib"
-               "sat-lisp"
+  :depends-on ("sat-lisp"
+               "bordeaux-threads"
+               "cl-smt-lib"
                "array-operations")
   :components ((:module "src"
                 :components
