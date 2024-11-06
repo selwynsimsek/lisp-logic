@@ -20,6 +20,8 @@ Although lisp-logic is a Common Lisp DSL, it should be remembered that logical t
 This choice is made so as to make linear algebra over 𝔽₂ - a key application of lisp-logic - easier to follow.
 
 ** Introduction
+lisp-logic expressions are Lisp s-expressions. They can conveniently be built out of each other using quasiquotation.
+
 lisp-logic expressions have two types.
 
 They have a /symbolic/ type, which is the type of the object that the expression would evaluate to if there was a model.
@@ -36,12 +38,24 @@ Identifiers for new bits should be obtained by calling ~allocate-boolean~ in ord
 
 0 and 1 are the /special/ identifiers, which always mean logical false and true respectively.
 
+This is useful when asserting a particular value for a symbolic expression.
+
 All other identifiers are variables, meaning that they may evaluate to either 0 or 1 in the model.
 
 ** (not arg)
 Symbolic type: bit
 
 Returns the negation of bit
+
+*** Examples
+#+BEGIN_SRC lisp
+  (let ((a (lisp-logic:allocate-boolean)))
+  (lisp-logic:input-formula `(not ,a)))
+#+END_SRC
+
+#+RESULTS:
+: NIL
+
 ** (= &rest args)
 Symbolic type: bit
 
@@ -49,15 +63,51 @@ args must all have symbolic type:
 
 + bits
 + multidimensional arrays of the same dimensions.
+  #+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-boolean))
+          (b (lisp-logic:allocate-vector 3))
+          (c (lisp-logic:allocate-matrix 3 2)))
+    (lisp-logic:input-formula `(= ,a 1))
+    (lisp-logic:input-formula `(= #*001 ,b))
+    (lisp-logic:input-formula `(= ,(aref c 2 1) ,(aref b 0))))
+  #+END_SRC
+
+  #+RESULTS:
+  : NIL
+
 ** (=> a b)
 Symbolic type: bit
 
 a and b are also bits.
+*** Examples
+#+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-boolean))
+          (b (lisp-logic:allocate-boolean)))
+    (lisp-logic:input-formula `(=> ,a ,b)))
+#+END_SRC
+
+#+RESULTS:
+: NIL
 
 ** (xor &rest args), (and &rest args), (or &rest args)
 Symbolic type: bit
 
 args must all be bits.
+
+*** Examples
+#+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-boolean))
+          (b (lisp-logic:allocate-boolean))
+          (c (lisp-logic:allocate-boolean))
+          (d (lisp-logic:allocate-boolean))
+          (e (lisp-logic:allocate-boolean)))
+    (lisp-logic:input-formula `(xor ,a ,c))
+    (lisp-logic:input-formula `(and ,b ,c ,d))
+    (lisp-logic:input-formula `(or ,a ,d ,e)))
+#+END_SRC
+
+#+RESULTS:
+: NIL
 
 ** (* &rest elements)
 Symbolic type: matrix or bit
@@ -65,20 +115,71 @@ Symbolic type: matrix or bit
 Performs matrix-vector multiplication (mod 2) on the elements.
 
 Array dimensions must be consistent.
+*** Examples
+  #+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-matrix 1 2))
+          (b (lisp-logic:allocate-vector 2))
+          (c (lisp-logic:allocate-matrix 2 2))
+          (d (lisp-logic:allocate-vector 2)))
+    (lisp-logic:input-formula `(= (* ,c ,b) #*10))
+    (lisp-logic:input-formula `(= ,b (* ,c ,d)))
+    (lisp-logic:input-formula `(= (* ,a ,c ,b) #*1)))
+  #+END_SRC
+
+  #+RESULTS:
+  : NIL
 
 ** (+ &rest elements)
 Symbolic type: matrix or bit
 
 Performs addition mod 2.
 
+*** Examples
+  #+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-vector 2))
+          (b (lisp-logic:allocate-vector 2)))
+    (lisp-logic:input-formula `(= (+ ,a ,b) #*01)))
+  #+END_SRC
+
+  #+RESULTS:
+  : NIL
+
 ** (transpose a)
 Symbolic type: matrix
 
 Performs matrix transposition on a.
 
+*** Examples
+  #+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-vector 2))
+          (b (lisp-logic:allocate-matrix 2 2))
+          (c (lisp-logic:allocate-vector 2)))
+    (lisp-logic:input-formula `(= #*1 (* (transpose ,a) ,b ,c))))
+  #+END_SRC
+
+  #+RESULTS:
+  : NIL
+
 ** (at-most n &rest args), (at-least n &rest args), (exactly n &rest args)
 Symbolic type: bit
 
 n is a natural number - doesn't name a variable
+
+*** Examples
+
+#+BEGIN_SRC lisp
+    (let ((a (lisp-logic:allocate-boolean))
+          (b (lisp-logic:allocate-boolean))
+          (c (lisp-logic:allocate-boolean))
+          (d (lisp-logic:allocate-boolean))
+          (e (lisp-logic:allocate-boolean)))
+    (lisp-logic:input-formula `(at-most 2 ,a ,b ,c ,d))
+    (lisp-logic:input-formula `(at-least 3 ,a ,c ,d ,e))
+    (lisp-logic:input-formula `(exactly 1 ,b ,c ,d)))
+#+END_SRC
+
+#+RESULTS:
+: NIL
+
 * model-eval
 ~model-eval~ is used to evaluate symbolic expressions in the context of the model of the solver.

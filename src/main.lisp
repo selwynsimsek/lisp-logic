@@ -198,7 +198,7 @@
   `(|or| ,@(mapcar #'lisp-logic->smt rest)))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'not)) rest)
-  `(|not| ,(lisp-logic->smt rest)))
+  `(|not| ,@(mapcar #'lisp-logic->smt rest)))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'transpose)) rest)
   (lisp-logic->smt (aops:permute '(1 0) (lisp-logic->smt (first rest)))))
@@ -211,7 +211,8 @@
   (when (zerop (length rest))
     (error "need at least one thing to be equal"))
   (etypecase (first rest)
-    ((or integer cons) `(|=| ,@(mapcar #'lisp-logic->smt rest)))
+    ((or integer cons) (lisp-logic->smt `(|=| ,@(mapcar #'lisp-logic->smt rest))))
+    ((or symbol z3-symbol) `(|=| ,@(mapcar #'lisp-logic->smt rest)))
     (array `(|and| ,@(coerce
                       (aops:flatten
                        (apply #'aops:each
@@ -256,14 +257,14 @@
   `(|and| ,(lisp-logic->smt a) ,(lisp-logic->smt b)))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'at-most)) rest)
-  `((_ |at-most| ,(first rest)) ,@(rest rest)))
+  `((_ |at-most| ,(first rest)) ,@(mapcar #'lisp-logic->smt (rest rest))))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'at-least)) rest)
-  `((_ |at-least| ,(first rest)) ,@(rest rest)))
+  `((_ |at-least| ,(first rest)) ,@(mapcar #'lisp-logic->smt (rest rest))))
 
 (defmethod lisp-logic-cons->smt ((car (eql 'exactly)) rest)
-  `(|and| ,(lisp-logic-cons->smt (cons 'at-most rest))
-          ,(lisp-logic-cons->smt (cons 'at-least rest))))
+  `(|and| ,(lisp-logic->smt (cons 'at-most rest))
+          ,(lisp-logic->smt (cons 'at-least rest))))
 
 
 (defmethod %model-eval ((solver sat-solver) (expression integer))
@@ -286,7 +287,9 @@
 (defun smt->cnf (solver)
   "Serialises the current state of the SMT solver for use with a SAT solver."
   (cl-smt-lib:write-to-smt *smt* `((|apply|
-                                    |tseitin-cnf|))) ; use tactics to convert to CNF
+                                    (|then|
+                                     |card2bv|
+                                     |tseitin-cnf|)))) ; use tactics to convert to CNF
   (bind (((_ (_ &rest content)) (print (cl-smt-lib:read-from-smt *smt*)))
          (depth (nth (- (length content) 1) content))
          (precision (nth (- (length content) 3) content))
