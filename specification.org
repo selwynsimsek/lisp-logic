@@ -9,29 +9,44 @@ All symbols will be exported from the ~lisp-logic~ package unless otherwise spec
 * How to use lisp-logic
 
 lisp-logic will automatically load sat-lisp, which contains a selection of incremental SAT solvers that lisp-logic can use as a backend.
+
 lisp-logic should therefore require no additional configuration beyond ensuring that sat-lisp is available.
 
 * input-formula
 The function ~input-formula~ is used to make the solver assert that expressions hold.
+
 Although lisp-logic is a Common Lisp DSL, it should be remembered that logical true evaluates to 1 and logical false evaluates to 0.
+
 This choice is made so as to make linear algebra over 𝔽₂ - a key application of lisp-logic - easier to follow.
 
 ** Introduction
 lisp-logic expressions have two types.
+
 They have a /symbolic/ type, which is the type of the object that the expression would evaluate to if there was a model.
+
 They also have a /Lisp/ type, which is the type of the expression as it exists within Common Lisp.
+
 The two types are not necessarily the same.
+
 Symbolic types are bits or multidimensional bit arrays.
-A bit is referred to by a non-negative integer.
-0 and 1 have the special values of false and true.
-All other non-negative integers are variables.
+
+A bit is referred to by a unique non-negative integer, called the /identifier/ of the bit.
+
+Identifiers for new bits should be obtained by calling ~allocate-boolean~ in order to avoid clashes in which two bits share the same identifier.
+
+0 and 1 are the /special/ identifiers, which always mean logical false and true respectively.
+
+All other identifiers are variables, meaning that they may evaluate to either 0 or 1 in the model.
+
 ** (not arg)
 Symbolic type: bit
+
 Returns the negation of bit
 ** (= &rest args)
 Symbolic type: bit
 
 args must all have symbolic type:
+
 + bits
 + multidimensional arrays of the same dimensions.
 ** (=> a b)
@@ -41,23 +56,29 @@ a and b are also bits.
 
 ** (xor &rest args), (and &rest args), (or &rest args)
 Symbolic type: bit
+
 args must all be bits.
 
 ** (* &rest elements)
 Symbolic type: matrix or bit
-Performs matrix-vector multiplication mod 2 on the elements.
+
+Performs matrix-vector multiplication (mod 2) on the elements.
+
 Array dimensions must be consistent.
 
 ** (+ &rest elements)
 Symbolic type: matrix or bit
+
 Performs addition mod 2.
 
 ** (transpose a)
 Symbolic type: matrix
+
 Performs matrix transposition on a.
 
 ** (at-most n &rest args), (at-least n &rest args), (exactly n &rest args)
 Symbolic type: bit
+
 n is a natural number - doesn't name a variable
 * model-eval
 ~model-eval~ is used to evaluate symbolic expressions in the context of the model of the solver.
