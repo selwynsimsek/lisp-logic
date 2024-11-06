@@ -51,10 +51,6 @@
 (defgeneric %reset-solver (solver)
   (:documentation "Resets the solver to having no variables or clauses."))
 
-(defun retrieve-model (&key (solver *solver*)) (%retrieve-model solver))
-(defgeneric %retrieve-model (solver)
-  (:documentation "Returns the model from `solver' - provided that it exists. Usually a bit-vector."))
-
 (defun model (&key (solver *solver*)) (%model solver))
 
 (defun model-eval (expression &key (solver *solver*)) (%model-eval solver expression))
@@ -113,9 +109,15 @@
 
 (defvar *solver* (make-instance 'sat-solver))
 
-(defmethod initialize-instance :after ((instance sat-solver) &rest initargs)
+(defmethod initialize-instance :after ((solver sat-solver) &rest initargs)
   (declare (ignore initargs))
-  (sat-lisp:init-solver instance))
+  (init-solver solver))
+
+(defmethod init-solver ((solver sat-solver))
+  (sat-lisp:init-solver solver)
+  ;; Reserve the literal '1' to be true
+  (sat-lisp:add-literal (allocate-boolean :solver solver) :solver solver)
+  (sat-lisp:add-literal 0 :solver solver))
 
 (defmacro with-sat-solver (&body body)
   `(let ((*solver* (make-instance 'sat-solver)))
@@ -134,8 +136,7 @@
 
 (defmethod %reset-solver ((solver sat-solver))
   (sat-lisp:release-solver solver)
-  (setf ())
-  (sat-lisp:init-solver solver))
+  (init-solver solver))
 
 (defmethod %model ((solver sat-solver)) (sat-lisp:model solver))
 
@@ -160,7 +161,11 @@
     ;; convert the results to cnf form and write them to the solver
     (smt->cnf solver)))
 
-(defmethod lisp-logic->smt ((formula integer)) (z3-name formula))
+(defmethod lisp-logic->smt ((formula integer))
+  (alexandria:switch (formula :test #'=)
+    (0 '|false|)
+    (1 '|true|)
+    (t (z3-name formula))))
 
 (defmethod lisp-logic->smt ((formula vector))
   (lisp-logic->smt (aops:reshape formula '(t 1))))

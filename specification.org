@@ -22,7 +22,9 @@ They have a /symbolic/ type, which is the type of the object that the expression
 They also have a /Lisp/ type, which is the type of the expression as it exists within Common Lisp.
 The two types are not necessarily the same.
 Symbolic types are bits or multidimensional bit arrays.
-A bit is referred to by a natural number.
+A bit is referred to by a non-negative integer.
+0 and 1 have the special values of false and true.
+All other non-negative integers are variables.
 ** (not arg)
 Symbolic type: bit
 Returns the negation of bit
