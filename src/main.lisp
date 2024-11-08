@@ -18,6 +18,7 @@
            allocate-boolean
            allocate-vector
            allocate-matrix
+           with-reset-solver
            z3-solver
            sat-solver
            with-sat-solver))
@@ -42,10 +43,6 @@
 (defun solve (&key (solver *solver*)) (%solve solver))
 (defgeneric %solve (solver)
   (:documentation "Tries to obtain a satisfying solution and returns the state. One of :input, :sat or :unsat."))
-
-(defmethod %solve :around (solver)
-  (time (call-next-method)))
-
 
 (defun check-sat (&key (solver *solver*))
   "Returns non-NIL if and only if the problem is satisfied."
@@ -104,9 +101,14 @@
 ;;; can you add global optimisation later on? probably
 ;;; keep it simple for now
 
-(defclass sat-solver (solver sat-lisp:incremental-sat-solver)
+(defclass cached-formula-solver ()
+  ((cached-formulae :initarg :cached-formulae :accessor cached-formulae :initform nil))
+  (:documentation "A solver that caches its formulae."))
+
+(defclass sat-solver (solver sat-lisp:incremental-sat-solver cached-formula-solver)
   ()
   (:documentation "An implementation of lisp-logic that uses an incremental sat solver via sat-lisp."))
+
 
 (defvar *solver* (make-instance 'sat-solver))
 
@@ -114,11 +116,12 @@
   (declare (ignore initargs))
   (init-solver solver))
 
-(defmethod %solve :before ((solver sat-solver))
+(defmethod %solve :around (solver)
   (format *debug-io* "Calling solver ~a with ~a variables and ~a phrases...~%"
           (sat-lisp:ipasir-signature)
           (variable-count :solver solver)
-          (phrase-count :solver solver)))
+          (phrase-count :solver solver))
+  (time (call-next-method)))
 
 (defmethod init-solver ((solver sat-solver))
   (sat-lisp:init-solver solver)
@@ -136,37 +139,59 @@
 (defmethod %variable-count ((solver sat-solver))
   (sat-lisp:variable-count solver))
 
-(defmethod %phrase-count ((solver sat-solver))
-  (loop for x across (sat-lisp:added-literals solver) counting (zerop x)))
+(defmethod %phrase-count ((solver cached-formula-solver))
+ ; (loop for x across (sat-lisp:added-literals solver) counting (zerop x))
+  (length (cached-formulae solver)))
 
-(defmethod %solve ((solver sat-solver)) (sat-lisp:solve solver))
+(defmethod %solve :before ((solver sat-solver))
+  (add-formulae solver))
+
+(defmethod %solve ((solver sat-solver))
+  (sat-lisp:solve solver))
 
 (defmethod %reset-solver ((solver sat-solver))
   (sat-lisp:release-solver solver)
   (init-solver solver))
+
+(defmethod %reset-solver :after ((solver cached-formula-solver))
+  (setf (cached-formulae solver) nil))
 
 (defmethod %model ((solver sat-solver)) (sat-lisp:model solver))
 
 (defmethod %allocate-boolean ((solver sat-solver))
   (incf (sat-lisp:variable-count solver)))
 
-(defmethod %input-formula ((solver sat-solver) formula)
+(defmethod %input-formula ((solver cached-formula-solver) formula)
+  (push formula (cached-formulae solver)))
+
+(defmethod add-formulae ((solver sat-solver))
   "Should use Z3 to do the formula translation as a first step."
-  (bind ((smt-formulae (lisp-logic->smt formula))
+ ; (format t "~a~%" (cached-formulae solver))
+  (bind ((cl-smt-lib:*smt-debug* nil)
          (symbols (remove-duplicates
-                   (remove-if-not (lambda (s) (z3-symbol-p s)) (alexandria:flatten smt-formulae))
-                   :test #'z3-symbol-equal-p))
-         (cl-smt-lib:*smt-debug* nil))
-    ;; reset the solver
-    (cl-smt-lib:write-to-smt *smt* '((|reset|)))
+                   (remove-if-not (lambda (s) (z3-symbol-p s))
+                                  (alexandria:flatten
+                                   (mapcar #'lisp-logic->smt
+                                           (cached-formulae solver))))
+                   :test #'z3-symbol-equal-p)))
     ;; declare the variables
     (loop for symbol in symbols
           do (cl-smt-lib:write-to-smt *smt* `((|declare-fun| ,symbol () |Bool|))))
-    ;; write the formulae
-    (cl-smt-lib:write-to-smt *smt* `((|assert| ,smt-formulae)))
+    (loop for formula in (cached-formulae solver) do
+      (bind ((smt-formulae (lisp-logic->smt formula))
+             )
+        ;; reset the solver
+                                        ; (cl-smt-lib:write-to-smt *smt* '((|reset|)))
+        ;; write the formulae
+        (cl-smt-lib:write-to-smt *smt* `((|assert| ,smt-formulae))))))
+  (smt->cnf solver))
     ;; read out the results
-    ;; convert the results to cnf form and write them to the solver
-    (smt->cnf solver)))
+    ;; convert the results to cnf form and write them to the solver))
+
+(defmacro with-reset-solver (&rest body)
+  `(unwind-protect (progn ,@body)
+     (reset-smt-process)
+     (reset-solver)))
 
 (defmethod lisp-logic->smt ((formula integer))
   (alexandria:switch (formula :test #'=)
@@ -295,6 +320,7 @@
   "Serialises the current state of the SMT solver for use with a SAT solver."
   (cl-smt-lib:write-to-smt *smt* `((|apply|
                                     (|then|
+                                     |simplify|
                                      |card2bv|
                                      |tseitin-cnf|)))) ; use tactics to convert to CNF
   (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
@@ -339,6 +365,7 @@
    ; pathname
     ))
 
+
 (defun close-smt (smt)
   ;; Close the input and output streams first
   (close (cl-smt-lib::input smt))
@@ -346,7 +373,7 @@
                                         ; (bt:destroy-thread (cl-smt-lib/process-two-way-stream::thread smt))
   (uiop:terminate-process (cl-smt-lib::process smt))
   ;; Make sure it's dead
- ; (uiop:run-program (format nil "kill ~a" (smt-pid smt)) :ignore-error-status t)
+                                        ; (uiop:run-program (format nil "kill ~a" (smt-pid smt)) :ignore-error-status t)
   ;;  If the process is still alive, user needs to be alerted
   (sleep 1)
   (when (uiop:process-alive-p (cl-smt-lib::process smt))
