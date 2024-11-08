@@ -76,11 +76,8 @@
                              (loop repeat n collect (allocate-boolean :solver solver)))))
 ;;; General implementation
 
-(defmethod %model-eval (solver (expression list))
-  (mapcar (lambda (x) (model-eval solver x)) solver))
-
 (defmethod %model-eval (solver (expression array))
-  (aops:each (lambda (x) (model-eval solver x)) array))
+  (aops:each (lambda (x) (model-eval x :solver solver)) expression))
 
 ;;; Z3 implementation
 
