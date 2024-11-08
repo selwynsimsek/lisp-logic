@@ -1,7 +1,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; High level logic solver for Common Lisp.
 
-(defpackage lisp-logic
+(defpackage com.selwynsimsek.lisp-logic
   (:use :cl)
   (:shadowing-import-from #:metabang-bind #:bind)
   (:export *solver*
@@ -22,7 +22,7 @@
            sat-solver
            with-sat-solver))
 
-(in-package :lisp-logic)
+(in-package :com.selwynsimsek.lisp-logic)
 
 ;;; API (aim to interact with the solver only through this)
 
@@ -42,6 +42,10 @@
 (defun solve (&key (solver *solver*)) (%solve solver))
 (defgeneric %solve (solver)
   (:documentation "Tries to obtain a satisfying solution and returns the state. One of :input, :sat or :unsat."))
+
+(defmethod %solve :around (solver)
+  (time (call-next-method)))
+
 
 (defun check-sat (&key (solver *solver*))
   "Returns non-NIL if and only if the problem is satisfied."
@@ -110,6 +114,12 @@
   (declare (ignore initargs))
   (init-solver solver))
 
+(defmethod %solve :before ((solver sat-solver))
+  (format *debug-io* "Calling solver ~a with ~a variables and ~a phrases...~%"
+          (sat-lisp:ipasir-signature)
+          (variable-count :solver solver)
+          (phrase-count :solver solver)))
+
 (defmethod init-solver ((solver sat-solver))
   (sat-lisp:init-solver solver)
   ;; Reserve the literal '1' to be true
@@ -146,7 +156,7 @@
          (symbols (remove-duplicates
                    (remove-if-not (lambda (s) (z3-symbol-p s)) (alexandria:flatten smt-formulae))
                    :test #'z3-symbol-equal-p))
-         (cl-smt-lib:*smt-debug* *debug-io*))
+         (cl-smt-lib:*smt-debug* nil))
     ;; reset the solver
     (cl-smt-lib:write-to-smt *smt* '((|reset|)))
     ;; declare the variables
@@ -230,7 +240,7 @@
                                 (lisp-logic->smt `(+ ,@elements)))
                   (mapcar #'lisp-logic->smt rest)))))
 
-(trace lisp-logic->smt lisp-logic-cons->smt lisp-logic-multiply->smt)
+;(trace lisp-logic->smt lisp-logic-cons->smt lisp-logic-multiply->smt)
 
 (defmethod lisp-logic-multiply->smt ((a array) (b vector))
   "Assumes that b is a column vector."
@@ -267,7 +277,7 @@
 (defmethod %model-eval ((solver sat-solver) (expression integer))
   (if (sat-lisp:literal-value solver expression) 1 0))
 
-(defvar *smt-args* '("-v:10" "model_validate=true" "parallel.enable=true" "parallel.threads.max=100") "Additional arguments for Z3")
+(setf *smt-args* '("model_validate=true" "parallel.enable=true" "parallel.threads.max=100"))
 
 (defun make-smt (&optional (type :z3))
   "Returns a handle to an SMT solver. Z3 is the default as it exposes useful extensions."
@@ -287,7 +297,7 @@
                                     (|then|
                                      |card2bv|
                                      |tseitin-cnf|)))) ; use tactics to convert to CNF
-  (bind (((_ (_ &rest content)) (print (cl-smt-lib:read-from-smt *smt*)))
+  (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
          (depth (nth (- (length content) 1) content))
          (precision (nth (- (length content) 3) content))
          (sat-lisp:*sat-solver* solver)
@@ -302,8 +312,8 @@
                   (if (str:starts-with? "VAR-" (symbol-name symbol))
                       (parse-integer (subseq (symbol-name symbol) 4))
                       (allocate-boolean :solver solver)))))))
-    (print clauses) ;; TODO Actually write the variables to the sat solver
-    (print (alexandria:hash-table-alist variable-hash-table))
+    ;(print clauses) ;; TODO Actually write the variables to the sat solver
+    ;(print (alexandria:hash-table-alist variable-hash-table))
     (loop for clause in clauses do
       (cond
         ((symbolp clause)
