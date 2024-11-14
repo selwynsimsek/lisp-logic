@@ -10,7 +10,11 @@
            solve
            transpose
            solver
+           =>
            check-sat
+           at-most
+           at-least
+           exactly
            reset-solver
            retrieve-model
            model-eval
@@ -106,7 +110,7 @@
   (:documentation "A solver that caches its formulae."))
 
 (defclass sat-solver (solver sat-lisp:incremental-sat-solver cached-formula-solver)
-  ()
+  ((declared-symbols :initarg :declared-symbols :accessor declared-symbols :initform nil))
   (:documentation "An implementation of lisp-logic that uses an incremental sat solver via sat-lisp."))
 
 
@@ -116,11 +120,13 @@
   (declare (ignore initargs))
   (init-solver solver))
 
-(defmethod %solve :around (solver)
+(defmethod %solve :before (solver)
   (format *debug-io* "Calling solver ~a with ~a variables and ~a phrases...~%"
           (sat-lisp:ipasir-signature)
           (variable-count :solver solver)
-          (phrase-count :solver solver))
+          (phrase-count :solver solver)))
+
+(defmethod %solve :around (solver)
   (time (call-next-method)))
 
 (defmethod init-solver ((solver sat-solver))
@@ -139,9 +145,9 @@
 (defmethod %variable-count ((solver sat-solver))
   (sat-lisp:variable-count solver))
 
-(defmethod %phrase-count ((solver cached-formula-solver))
+(defmethod %phrase-count ((solver sat-solver))
  ; (loop for x across (sat-lisp:added-literals solver) counting (zerop x))
-  (length (cached-formulae solver)))
+  (loop for x across (sat-lisp:added-literals solver) counting (zerop x)))
 
 (defmethod %solve :before ((solver sat-solver))
   (add-formulae solver))
@@ -151,6 +157,8 @@
 
 (defmethod %reset-solver ((solver sat-solver))
   (sat-lisp:release-solver solver)
+  (setf (declared-symbols solver) nil)
+  (reset-smt-process)
   (init-solver solver))
 
 (defmethod %reset-solver :after ((solver cached-formula-solver))
@@ -162,7 +170,8 @@
   (incf (sat-lisp:variable-count solver)))
 
 (defmethod %input-formula ((solver cached-formula-solver) formula)
-  (push formula (cached-formulae solver)))
+  (push formula (cached-formulae solver))
+  nil)
 
 (defmethod add-formulae ((solver sat-solver))
   "Should use Z3 to do the formula translation as a first step."
@@ -176,7 +185,10 @@
                    :test #'z3-symbol-equal-p)))
     ;; declare the variables
     (loop for symbol in symbols
-          do (cl-smt-lib:write-to-smt *smt* `((|declare-fun| ,symbol () |Bool|))))
+          unless (member symbol (declared-symbols solver) :test #'z3-symbol-equal-p)
+            do (progn
+                 (push symbol (declared-symbols solver))
+                 (cl-smt-lib:write-to-smt *smt* `((|declare-fun| ,symbol () |Bool|)))))
     (loop for formula in (cached-formulae solver) do
       (bind ((smt-formulae (lisp-logic->smt formula))
              )
@@ -184,7 +196,8 @@
                                         ; (cl-smt-lib:write-to-smt *smt* '((|reset|)))
         ;; write the formulae
         (cl-smt-lib:write-to-smt *smt* `((|assert| ,smt-formulae))))))
-  (smt->cnf solver))
+  (smt->cnf solver)
+  (setf (cached-formulae solver) nil))
     ;; read out the results
     ;; convert the results to cnf form and write them to the solver))
 
@@ -318,52 +331,53 @@
 (defvar *smt* (make-smt))
 (defun smt->cnf (solver)
   "Serialises the current state of the SMT solver for use with a SAT solver."
-  (cl-smt-lib:write-to-smt *smt* `((|apply|
-                                    (|then|
-                                     |simplify|
-                                     |card2bv|
-                                     |tseitin-cnf|)))) ; use tactics to convert to CNF
-  (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
-         (depth (nth (- (length content) 1) content))
-         (precision (nth (- (length content) 3) content))
-         (sat-lisp:*sat-solver* solver)
-         (clauses (subseq content 0 (- (length content) 4))) ; 20 for testing purposes
-         (variable-hash-table (make-hash-table :test 'eq)))
-    (loop for clause in clauses do
-      (let ((symbol-bag (remove 'not (remove 'or (alexandria:flatten clause)))))
-        (loop for symbol in symbol-bag do
-          (unless (gethash symbol variable-hash-table)
+  (bind ((cl-smt-lib:*smt-debug* nil))
+    (cl-smt-lib:write-to-smt *smt* `((|apply|
+                                      (|then| ; TODO look into these? are they all necessary?
+                                       |simplify| ; is this the best combination?
+                                       |card2bv|
+                                       |tseitin-cnf|)))) ; use tactics to convert to CNF
+    (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
+           (depth (nth (- (length content) 1) content))
+           (precision (nth (- (length content) 3) content))
+           (sat-lisp:*sat-solver* solver)
+           (clauses (subseq content 0 (- (length content) 4))) ; 20 for testing purposes
+           (variable-hash-table (make-hash-table :test 'eq)))
+      (loop for clause in clauses do
+        (let ((symbol-bag (remove 'not (remove 'or (alexandria:flatten clause)))))
+          (loop for symbol in symbol-bag do
+            (unless (gethash symbol variable-hash-table)
                                         ; symbol not stored yet
-            (setf (gethash symbol variable-hash-table)
-                  (if (str:starts-with? "VAR-" (symbol-name symbol))
-                      (parse-integer (subseq (symbol-name symbol) 4))
-                      (allocate-boolean :solver solver)))))))
-    ;(print clauses) ;; TODO Actually write the variables to the sat solver
-    ;(print (alexandria:hash-table-alist variable-hash-table))
-    (loop for clause in clauses do
-      (cond
-        ((symbolp clause)
-         (sat-lisp:add-literal (gethash clause variable-hash-table))
-         (sat-lisp:add-literal 0)
+              (setf (gethash symbol variable-hash-table)
+                    (if (str:starts-with? "VAR-" (symbol-name symbol))
+                        (parse-integer (subseq (symbol-name symbol) 4))
+                        (allocate-boolean :solver solver)))))))
+                                        ;(print clauses) ;; TODO Actually write the variables to the sat solver
+                                        ;(print (alexandria:hash-table-alist variable-hash-table))
+      (loop for clause in clauses do
+        (cond
+          ((symbolp clause)
+           (sat-lisp:add-literal (gethash clause variable-hash-table))
+           (sat-lisp:add-literal 0)
                                         ;(format stream "~a 0~%" (gethash clause variable-hash-table))
-         )                              ; a unit assertion
-        ((eq (car clause) 'not)
-         (sat-lisp:add-literal (- (gethash (second clause) variable-hash-table)))
-         (sat-lisp:add-literal 0))
+           )                              ; a unit assertion
+          ((eq (car clause) 'not)
+           (sat-lisp:add-literal (- (gethash (second clause) variable-hash-table)))
+           (sat-lisp:add-literal 0))
                                         ; a unit negation
-        ((eq (car clause) 'or)
-         (map nil #'sat-lisp:add-literal
-              (loop for subclause in (rest clause)
-                    collect
-                    (cond ((symbolp subclause)
-                           (gethash subclause variable-hash-table))
-                          ((eq 'not (car subclause))
-                           (- (gethash (second subclause) variable-hash-table)))
-                          (t (error "shouldnt be here")))))
-         (sat-lisp:add-literal 0))
-        (t (error "not understood"))))
-   ; pathname
-    ))
+          ((eq (car clause) 'or)
+           (map nil #'sat-lisp:add-literal
+                (loop for subclause in (rest clause)
+                      collect
+                      (cond ((symbolp subclause)
+                             (gethash subclause variable-hash-table))
+                            ((eq 'not (car subclause))
+                             (- (gethash (second subclause) variable-hash-table)))
+                            (t (error "shouldnt be here")))))
+           (sat-lisp:add-literal 0))
+          (t (error "not understood"))))
+                                        ; pathname
+      )))
 
 
 (defun close-smt (smt)
