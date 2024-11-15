@@ -334,7 +334,6 @@
   (bind ((cl-smt-lib:*smt-debug* nil))
     (cl-smt-lib:write-to-smt *smt* `((|apply|
                                       (|then| ; TODO look into these? are they all necessary?
-                                       |simplify| ; is this the best combination?
                                        |card2bv|
                                        |tseitin-cnf|)))) ; use tactics to convert to CNF
     (bind (((_ (_ &rest content)) (cl-smt-lib:read-from-smt *smt*))
